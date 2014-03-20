@@ -14,6 +14,15 @@
 
 #define NSTATE 5
 
+#if defined(_WIN32)
+#define PATH_SEP '\\'
+#else
+#define PATH_SEP '/'
+#endif
+
+#define MODELEXT ".pdf"
+#define MODELEXT_LEN strlen(MODELEXT)
+
 /* Usage: output usage */
 void Usage(void)
 {
@@ -22,15 +31,27 @@ void Usage(void)
    fprintf(stderr, "\n");
    fprintf(stderr, "  usage:\n");
    fprintf(stderr, "       PDF_read [ options ] \n");
-   fprintf(stderr, "  options:                                                                   [  def]\n");
-   fprintf(stderr, "    -m pdf         : model file                                              [  N/A]\n");
-   fprintf(stderr, "    -n int         : number of states                                        [   %d]\n", NSTATE);
-   fprintf(stderr, "    -o txt         : output text file name                                   [  N/A]\n");
+   fprintf(stderr, "  options:                                                       [  def]\n");
+   fprintf(stderr, "    -m pdf         : model file                                  [  N/A]\n");
+   fprintf(stderr, "    -n int         : number of states                            [  %3d]\n", NSTATE);
+   fprintf(stderr, "    -o txt         : output text file name                       [  N/A]\n");
+   fprintf(stderr, "    -h             : show this help message\n");
    fprintf(stderr, "  note:\n");
    fprintf(stderr, "    pdf file name is the name of feature.\n");
    fprintf(stderr, "\n");
 
    exit(0);
+}
+
+/** Safe calloc routine. */
+static void* xcalloc(size_t num, size_t size) {
+   void *ptr;
+   ptr = calloc(num,size);
+   if (ptr == NULL) {
+	fprintf(stderr, "PDF_read: Out of memory\n");
+	exit(-1);
+   }
+   return ptr;
 }
 
 static int PDF_byte_swap(void *p, const int size, const int block)
@@ -52,6 +73,46 @@ static int PDF_byte_swap(void *p, const int size, const int block)
    return i;
 }
 
+/** Splits a file name and returns a new char* with the directory.*/
+static char* get_directory(const char *fn) {
+   char *tmp;
+   char *directory =NULL;
+   tmp = strrchr(fn, PATH_SEP); /* pointer to the last pathsep*/
+   if (tmp != NULL) {
+      tmp++;
+      directory = xcalloc(tmp-fn+1,sizeof(char));
+      strncpy(directory, fn, tmp-fn);
+      directory[tmp-fn] = '\0';
+   } else {
+      directory = xcalloc(1,sizeof(char));
+      directory[0] = '\0';
+   }
+   return directory;
+}
+
+/* Returns ".pdf" if fn ends with .pdf, returns "" otherwise */
+static char* get_model_extension(const char *fn) {
+   char *extension = NULL;
+   if (strncmp(MODELEXT, &(fn[strlen(fn)-MODELEXT_LEN]),MODELEXT_LEN) == 0) {
+      extension = xcalloc(MODELEXT_LEN+1,sizeof(char));
+      strcpy(extension,MODELEXT);
+      extension[MODELEXT_LEN] = '\0';
+   } else {
+      extension = xcalloc(1,sizeof(char));
+      extension[0] = '\0';
+   }
+   return extension;
+}
+
+static char* get_filename(const char *fn, const char *dir, const char *ext) {
+   char *filename = NULL;
+   size_t fn_len;
+   fn_len = strlen(fn)-strlen(dir)-strlen(ext);
+   filename = xcalloc(fn_len, sizeof(char));
+   strncpy(filename, fn + strlen(dir),fn_len);
+   return filename;
+}
+
 int PDF_fread(void *p, const int size, const int num, FILE * fp)
 {
    const int block = fread(p, size, num, fp);
@@ -60,16 +121,24 @@ int PDF_fread(void *p, const int size, const int num, FILE * fp)
    return block;
 }
 
-void main (int argc, char** argv)
+int main (int argc, char** argv)
 {
 	FILE *fpdf = NULL, *ftxt = NULL;
 	int *npdfs, nstate = NSTATE, nvec, iMSD, nstream;
-	char *fnpdf = NULL, *fntxt = NULL, *pattern = NULL;
+	char *fnpdf = NULL, *fntxt = NULL;
 	float ***pdfs;
 	int i, j, k;
+	int free_fntxt = 1;
+	/* Assuming fnpdf is given as: "../bar/foo/dur.pdf":
+           fnpdf_dir: Directory where fnpdf is: "../bar/foo/"
+           fnpdf_fn: File name without extension: "dur"
+           fnpdf_ext: Extension: ".pdf"
+	*/
+	char *fnpdf_dir = NULL, *fnpdf_fn = NULL, *fnpdf_ext = NULL;
+
 
 	/* parse command line */
-   if (argc == 1)
+   if (argc == 1 || argc %2 == 0)
       Usage();
 
 	while (--argc) {
@@ -85,24 +154,37 @@ void main (int argc, char** argv)
 				break;
 			case 'o':
 				fntxt = *++argv;
+				free_fntxt = 0;
 				--argc;
 				break;
+			case 'h':
+				Usage();
 			default:
 				printf("PDF_read: Invalid option '-%c'.\n", *(*argv + 1));
 				exit(0);
 			}
 		}
 	}
+	if (fnpdf == NULL) {
+		printf("PDF_read: PDF file name required\n");
+		exit(-1);
+	}
 	if((fpdf = fopen(fnpdf, "rb")) == NULL) {
 		printf("PDF_read: Cannot open %s.\n", fnpdf);
 		exit(-1);
 	}
-	pattern = strtok(fnpdf, ".pdf");
-	printf("Anylizing \"%s\" model.\n", pattern);
+
+	/* Split fnpdf in fnpdf_dir, fnpdf_fn, fnpdf_ext */
+	fnpdf_ext = get_model_extension(fnpdf);
+	fnpdf_dir = get_directory(fnpdf);
+	fnpdf_fn = get_filename(fnpdf, fnpdf_dir, fnpdf_ext);
+
+
+	printf("Analyzing \"%s\" model.\n", fnpdf_fn);
 
 	if(fntxt == NULL) {
-		fntxt = (char *)calloc(strlen(fnpdf), sizeof(char));
-		sprintf(fntxt, "%s.txt", pattern);
+		fntxt = xcalloc(strlen(fnpdf_dir) + strlen(fnpdf_fn) +4+1, sizeof(char));
+		sprintf(fntxt, "%s%s.txt", fnpdf_dir, fnpdf_fn);
 	}
 	if((ftxt = fopen(fntxt, "w")) == NULL) {
 		printf("PDF_read: Creating %s failed.\n", fntxt);
@@ -119,19 +201,19 @@ void main (int argc, char** argv)
 	PDF_fread(&nvec, sizeof(int), 1, fpdf);
 
 	/* load number of pdfs */
-	npdfs = (int *)calloc(nstate, sizeof(int));
+	npdfs = xcalloc(nstate, sizeof(int));
 	for(i = 0; i < nstate; i++)
 		PDF_fread(&npdfs[i], sizeof(int), 1, fpdf);
 
 	/* load pdfs */
-	pdfs = (float ***)calloc(nstate, sizeof(float **));
+	pdfs = xcalloc(nstate, sizeof(float **));
 	for(i = 0; i < nstate; i++) {
-		pdfs[i] = (float **)calloc(npdfs[i], sizeof(float *));
+		pdfs[i] = xcalloc(npdfs[i], sizeof(float *));
 		for(j = 0; j < npdfs[i]; j++) {
 			if(iMSD == 0)
-				pdfs[i][j] = (float *)calloc(nstream * nvec * 2, sizeof(float));
+				pdfs[i][j] = xcalloc(nstream * nvec * 2, sizeof(float));
 			else
-				pdfs[i][j] = (float *)calloc(nstream * nvec * 4, sizeof(float));
+				pdfs[i][j] = xcalloc(nstream * nvec * 4, sizeof(float));
 		}
 	}
 	for(i = 0; i < nstate; i++) {
@@ -161,9 +243,9 @@ void main (int argc, char** argv)
 	fprintf(ftxt, "Number of streams: %d\n", nstream);
 	fprintf(ftxt, "Vector length: %d\n", nvec);
 	for(i = 0; i < nstate; i++) {
-		fprintf(ftxt, "State %s_s%d\tNumber of nodes %d\n", pattern, i+2, npdfs[i]);
+		fprintf(ftxt, "State %s_s%d\tNumber of nodes %d\n", fnpdf_fn, i+2, npdfs[i]);
 		for(j = 0; j < npdfs[i]; j++) {
-			fprintf(ftxt, "\tNode %s_s%d_%d\n", pattern, i+2, j+1);
+			fprintf(ftxt, "\tNode %s_s%d_%d\n", fnpdf_fn, i+2, j+1);
 			fprintf(ftxt, "\tMean");
 			for(k = 0; k < nvec; k++) {
 				fprintf(ftxt, "\t%6f", pdfs[i][j][k]);
@@ -189,6 +271,10 @@ void main (int argc, char** argv)
 		}
 	}
 	fclose(ftxt);
+	free(fnpdf_dir);
+	free(fnpdf_fn);
+	free(fnpdf_ext);
+	if (free_fntxt)	free(fntxt);
 	for(i = 0; i < nstate; i++) {
 		for(j = 0; j < npdfs[i]; j++)
 			free(pdfs[i][j]);
@@ -196,4 +282,5 @@ void main (int argc, char** argv)
 	}
 	free(pdfs);
 	free(npdfs);
+	return 0;
 }
